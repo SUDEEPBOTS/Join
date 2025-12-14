@@ -6,6 +6,12 @@ from flask import Flask
 from threading import Thread
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
+# FIX: Import section updated
+from telethon.errors import (
+    SessionPasswordNeededError, 
+    FloodWaitError, 
+    UserAlreadyParticipantError
+)
 from telethon.tl.functions.messages import GetStickerSetRequest, SendReactionRequest
 from telethon.tl.types import InputStickerSetShortName, ReactionEmoji
 from pymongo import MongoClient
@@ -131,7 +137,6 @@ async def start_handler(event):
     if not is_admin(event.sender_id): return
     refresh_targets()
     
-    # --- YAHAN BUTTON ADD KIYA HAI ---
     buttons = [
         [Button.inline("➕ Add Account", data="add_account_btn"), Button.inline("➕ Add Admin", data="add_admin_btn")],
         [Button.inline("🎯 Set Target", data="set_target"), Button.inline("🛑 Stop Target", data="stop_target")]
@@ -143,11 +148,10 @@ async def callback_handler(event):
     if not is_admin(event.sender_id): return
     data = event.data.decode('utf-8')
     
-    # BUTTON HANDLERS
     if data == "add_account_btn":
         user_states[event.sender_id] = {'step': 'ask_number'}
         await event.respond("📞 **Naya Number Bhejein:**\n(Example: +919876543210)")
-        
+
     elif data == "add_admin_btn":
         user_states[event.sender_id] = {'step': 'ask_admin_id'}
         await event.respond("👤 **New Admin ID:**")
@@ -211,6 +215,7 @@ async def handle_login_steps(event, state):
                 active_clients.append(state['client'])
                 await event.reply("✅ **Login Successful!**"); del user_states[chat_id]
             except SessionPasswordNeededError:
+                # AB YAHAN ERROR NAHI AAYEGA
                 user_states[chat_id]['step'] = 'ask_password'; await event.reply("🔐 **2FA Password Bhejein:**")
         elif state['step'] == 'ask_password':
             await state['client'].sign_in(password=text)
@@ -228,4 +233,4 @@ if __name__ == '__main__':
     keep_alive()
     bot.loop.run_until_complete(start_all_clients())
     bot.run_until_disconnected()
-    
+            
