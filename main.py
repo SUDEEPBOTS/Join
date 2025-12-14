@@ -93,20 +93,22 @@ async def start_all_clients():
             @client.on(events.NewMessage())
             async def troll_handler(event):
                 try:
+                    # Fast Sender Check
                     sender = await event.get_sender()
                     if not sender: return
                     sender_id = int(sender.id)
 
                     if sender_id in TARGET_CACHE:
-                        print(f"🎯 TARGET DETECTED: {sender_id}")
+                        print(f"⚡ FAST REACT: {sender_id}")
                         
-                        # --- 1. REACTION (HAMESHA HOGA) ---
-                        await asyncio.sleep(random.randint(1, 3))
+                        # --- 1. INSTANT REACTION (NO DELAY) ---
                         emoji = random.choice(['😂', '🌚', '🤣', '🤡', '💩', '🔥'])
                         try:
+                            # Direct await, no sleep!
                             await event.react(emoji)
-                            print(f"✅ Reacted {emoji}")
+                            print(f"✅ Instant React {emoji}")
                         except:
+                            # Fallback API (Slightly slower but works if main fails)
                             try:
                                 await client(SendReactionRequest(
                                     peer=event.peer_id,
@@ -115,18 +117,16 @@ async def start_all_clients():
                                 ))
                             except: pass
 
-                        # --- 2. STICKER (KABHI KABAR - 20% CHANCE) ---
-                        # random.random() 0.0 se 1.0 ke beech number deta hai.
-                        # < 0.20 ka matlab sirf 20% chance.
+                        # --- 2. STICKER (20% CHANCE) ---
                         if TROLL_STICKERS and random.random() < 0.20:
                             sticker = random.choice(TROLL_STICKERS)
                             try:
                                 await event.reply(file=sticker)
-                                print("✅ Sticker Sent (Rare)")
+                                print("✅ Sticker Sent")
                             except: pass
 
                 except Exception as e:
-                    print(f"Handler Error: {e}")
+                    pass # Silent error to keep speed high
 
             active_clients.append(client)
         except: pass
@@ -140,7 +140,7 @@ async def start_handler(event):
         [Button.inline("➕ Add Admin", data="add_admin_btn"), Button.inline("🎯 Set Target", data="set_target")],
         [Button.inline("🛑 Stop Target", data="stop_target")]
     ]
-    await event.reply(f"👋 **Ready!**\n\n🎯 Targets: `{len(TARGET_CACHE)}`\n🔥 Reaction: **Always**\n🎭 Sticker: **20% Chance**", buttons=buttons)
+    await event.reply(f"👋 **Super Fast Mode!**\n\n🎯 Targets: `{len(TARGET_CACHE)}`\n⚡ Reaction: **0.0s Delay**", buttons=buttons)
 
 @bot.on(events.CallbackQuery)
 async def callback_handler(event):
@@ -225,4 +225,4 @@ if __name__ == '__main__':
     keep_alive()
     bot.loop.run_until_complete(start_all_clients())
     bot.run_until_disconnected()
-    
+
