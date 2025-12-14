@@ -89,7 +89,7 @@ async def load_sticker_pack(client):
 # --- GANG ATTACK LOGIC ---
 async def gang_reaction(chat_id, message_id):
     """Sab bots ko ek sath order deta hai react karne ka"""
-    emoji = random.choice(['😂', '🌚', '🤣', '🤡', '💩', '🔥'])
+    emoji = random.choice(['😂', '🌚', '🤣', '🤤', '🤣', '🌝'])
     
     # Har active client (userbot) se react karwao
     for client in active_clients:
