@@ -3,6 +3,7 @@ import asyncio
 import logging
 import random
 import re
+import time  # Time gap ke liye
 from flask import Flask
 from threading import Thread
 from telethon import TelegramClient, events, Button
@@ -54,8 +55,12 @@ def keep_alive(): t = Thread(target=run_web); t.daemon = True; t.start()
 # --- GLOBALS ---
 bot = TelegramClient('admin_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 user_states = {} 
-active_clients = [] # Isme saare connected userbots rahenge
+active_clients = [] 
 TARGET_CACHE = set()
+
+# Sticker Spam Control Variables
+LAST_STICKER_TIME = 0
+STICKER_COOLDOWN = 4  # 4 Second ka gap zaroori hai
 
 # --- HELPER FUNCTIONS ---
 def is_admin(user_id):
@@ -66,7 +71,6 @@ def is_admin(user_id):
 def refresh_targets():
     global TARGET_CACHE
     temp_set = set()
-    # Cache ko fresh DB data se bharein
     for t in targets_collection.find({}):
         try: temp_set.add(int(t['user_id']))
         except: pass
@@ -86,20 +90,31 @@ async def load_sticker_pack(client):
     except Exception as e:
         print(f"❌ Sticker Error: {e}")
 
-# --- GANG ATTACK LOGIC ---
+# --- GANG ATTACK LOGIC (PARALLEL) ---
+async def perform_reaction(client, chat_id, message_id, emoji):
+    """Ek single bot se reaction karwata hai"""
+    try:
+        await client(SendReactionRequest(
+            peer=chat_id,
+            msg_id=message_id,
+            reaction=[ReactionEmoji(emoticon=emoji)]
+        ))
+    except: pass
+
 async def gang_reaction(chat_id, message_id):
-    """Sab bots ko ek sath order deta hai react karne ka"""
-    emoji = random.choice(['😂', '🌚', '🤣', '🤤', '🤣', '🌝'])
+    """Sab bots ko ek sath fire karta hai"""
+    emoji = random.choice(['😂', '🌚', '🤣', '🤡', '💩', '🔥'])
     
-    # Har active client (userbot) se react karwao
+    # Saare tasks create karo
+    tasks = []
     for client in active_clients:
-        try:
-            await client(SendReactionRequest(
-                peer=chat_id,
-                msg_id=message_id,
-                reaction=[ReactionEmoji(emoticon=emoji)]
-            ))
-        except: pass # Agar ek fail ho to dusra na ruke
+        # Check if client is connected
+        if client.is_connected():
+            tasks.append(perform_reaction(client, chat_id, message_id, emoji))
+    
+    # Sabko ek sath run karo (Parallel Execution)
+    if tasks:
+        await asyncio.gather(*tasks)
 
 # --- MONITORING BOT ---
 async def start_all_clients():
@@ -109,14 +124,21 @@ async def start_all_clients():
     print(f"🔄 Starting {len(sessions)} Bots...")
     
     stickers_loaded = False
+    
+    # Reset Active Clients
+    global active_clients
+    active_clients = []
 
     for user_data in sessions:
         try:
             client = TelegramClient(StringSession(user_data['session']), API_ID, API_HASH)
             await client.connect()
-            if not await client.is_user_authorized(): continue
             
-            # Load Stickers (Bas ek baar)
+            if not await client.is_user_authorized():
+                print(f"⚠️ Dead Session: {user_data.get('phone')}")
+                continue
+            
+            # Load Stickers (Only once)
             if not stickers_loaded:
                 await load_sticker_pack(client)
                 stickers_loaded = True
@@ -124,22 +146,28 @@ async def start_all_clients():
             # LISTENER
             @client.on(events.NewMessage())
             async def troll_handler(event):
+                global LAST_STICKER_TIME
                 try:
                     sender = await event.get_sender()
                     if not sender: return
                     sender_id = int(sender.id)
 
                     if sender_id in TARGET_CACHE:
-                        print(f"⚡ TARGET SPOTTED: {sender_id}")
-                        
-                        # 1. GANG REACTION (Sab Ek Sath)
-                        # Hum current client se react nahi karwayenge, balki 
-                        # 'gang_reaction' function call karenge jo SABSE karwayega.
-                        # Taaki sync rahe.
+                        # 1. GANG REACTION (Instant & Parallel)
+                        # Background mein fire karo taaki wait na karna pade
                         asyncio.create_task(gang_reaction(event.chat_id, event.id))
 
-                        # 2. Sticker Reply (20% Chance - Only Current Bot)
-                        if TROLL_STICKERS and random.random() < 0.20:
+                        # 2. STICKER LOGIC (Controlled)
+                        # Rule: 20% Chance (approx 1 in 5 msg) AND 4s Time Gap
+                        current_time = time.time()
+                        
+                        # Random < 0.20 matlab 20% chance
+                        if (TROLL_STICKERS and 
+                            random.random() < 0.20 and 
+                            (current_time - LAST_STICKER_TIME) > STICKER_COOLDOWN):
+                            
+                            LAST_STICKER_TIME = current_time # Timer update
+                            
                             sticker = random.choice(TROLL_STICKERS)
                             try: await event.reply(file=sticker)
                             except: pass
@@ -147,7 +175,10 @@ async def start_all_clients():
                 except: pass
 
             active_clients.append(client)
-        except: pass
+            print(f"✅ Bot Active: {user_data.get('phone')}")
+            
+        except Exception as e:
+            print(f"❌ Client Fail: {e}")
 
 # --- ADMIN COMMANDS ---
 @bot.on(events.NewMessage(pattern='/start'))
@@ -158,7 +189,7 @@ async def start_handler(event):
         [Button.inline("➕ Add Account", data="add_account_btn"), Button.inline("➕ Add Admin", data="add_admin_btn")],
         [Button.inline("🎯 Set Target", data="set_target"), Button.inline("🛑 Stop Target", data="stop_target")]
     ]
-    await event.reply(f"👋 **Gang Mode On!**\n\n🎯 Targets: `{len(TARGET_CACHE)}`\n🤖 Bots: `{len(active_clients)}`\n⚡ **All Bots Will React**", buttons=buttons)
+    await event.reply(f"👋 **Gang Controller!**\n\n🎯 Targets: `{len(TARGET_CACHE)}`\n🤖 Ready Bots: `{len(active_clients)}`\n\n**Settings:**\n⚡ Reaction: Sync Mode\n⏳ Sticker: 4s Gap / 20% Chance", buttons=buttons)
 
 @bot.on(events.CallbackQuery)
 async def callback_handler(event):
@@ -189,7 +220,6 @@ async def add_command(event):
 async def message_handler(event):
     if event.text.startswith('/') and event.text != '/cancel': pass
     elif is_admin(event.sender_id):
-        # 1. State Handling
         if event.sender_id in user_states:
             state = user_states[event.sender_id]
             text = event.text.strip()
@@ -201,32 +231,21 @@ async def message_handler(event):
             elif state['step'] == 'ask_target_id':
                 try: 
                     targets_collection.insert_one({"user_id": int(text)})
-                    refresh_targets() # Update Cache Immediately
+                    refresh_targets()
                     await event.reply(f"🎯 Set: {text}"); del user_states[event.sender_id]
                 except: await event.reply("Invalid.")
             
-            # --- STOP TARGET FIX ---
             elif state['step'] == 'ask_remove_target_id':
                 try:
                     t_id = int(text)
-                    # delete_many use kiya taaki duplicates bhi ud jayein
-                    result = targets_collection.delete_many({"user_id": t_id})
-                    
-                    # Memory/Cache ko turant clear karo
+                    targets_collection.delete_many({"user_id": t_id})
                     refresh_targets()
-                    
-                    if result.deleted_count > 0:
-                        await event.reply(f"🛑 **Stopped!** ID {t_id} removed."); 
-                    else:
-                        await event.reply("⚠️ ID database mein nahi mili, but cache refresh kar diya.");
-                    
-                    del user_states[event.sender_id]
+                    await event.reply(f"🛑 **Stopped!** ID {t_id} removed."); del user_states[event.sender_id]
                 except: await event.reply("Invalid ID.")
 
             elif state['step'] in ['ask_number', 'ask_otp', 'ask_password']:
                 await handle_login_steps(event, state)
         
-        # 2. Join Link
         elif "t.me/" in event.text:
             await handle_join_task(event)
 
@@ -238,18 +257,13 @@ async def handle_join_task(event):
     
     status_msg = await event.reply(f"🚀 **Checking Link...**")
     
-    # Regex Parser
-    identifier = None
-    join_type = None
-
+    identifier = None; join_type = None
     match_plus = re.search(r"t\.me/\+([a-zA-Z0-9_\-]+)", text)
     match_join = re.search(r"t\.me/joinchat/([a-zA-Z0-9_\-]+)", text)
     match_pub = re.search(r"t\.me/([a-zA-Z0-9_]{3,})", text)
 
-    if match_plus:
-        identifier = match_plus.group(1); join_type = "private"
-    elif match_join:
-        identifier = match_join.group(1); join_type = "private"
+    if match_plus: identifier = match_plus.group(1); join_type = "private"
+    elif match_join: identifier = match_join.group(1); join_type = "private"
     elif match_pub:
         candidate = match_pub.group(1)
         if candidate not in ["joinchat", "+"]: identifier = candidate; join_type = "public"
@@ -277,7 +291,7 @@ async def handle_join_task(event):
                 success += 1
                 try:
                     if join_type == "public": entity = await client.get_entity(identifier)
-                    else: entity = await client.get_entity(identifier) # Try for private
+                    else: entity = await client.get_entity(identifier)
                     await client(ToggleDialogPinRequest(peer=entity, pinned=True))
                 except: pass
             
@@ -308,7 +322,7 @@ async def handle_login_steps(event, state):
             try:
                 await state['client'].sign_in(state['phone'], otp, phone_code_hash=state['hash'])
                 save_session(state['phone'], state['client'])
-                active_clients.append(state['client'])
+                global active_clients; active_clients.append(state['client']) # Add to active list immediately
                 await event.reply("✅ **Added!**"); del user_states[chat_id]
             except SessionPasswordNeededError:
                 user_states[chat_id]['step'] = 'ask_password'; await event.reply("🔐 **Password:**")
@@ -328,4 +342,4 @@ if __name__ == '__main__':
     keep_alive()
     bot.loop.run_until_complete(start_all_clients())
     bot.run_until_disconnected()
-    
+
