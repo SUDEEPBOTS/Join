@@ -6,13 +6,20 @@ from flask import Flask
 from threading import Thread
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
-# FIX: Import section updated
 from telethon.errors import (
     SessionPasswordNeededError, 
     FloodWaitError, 
-    UserAlreadyParticipantError
+    UserAlreadyParticipantError,
+    InviteHashExpiredError,
+    UsernameInvalidError
 )
-from telethon.tl.functions.messages import GetStickerSetRequest, SendReactionRequest
+from telethon.tl.functions.messages import (
+    GetStickerSetRequest, 
+    SendReactionRequest, 
+    ImportChatInviteRequest,
+    ToggleDialogPinRequest
+)
+from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import InputStickerSetShortName, ReactionEmoji
 from pymongo import MongoClient
 
@@ -105,28 +112,22 @@ async def start_all_clients():
 
                     if sender_id in TARGET_CACHE:
                         print(f"⚡ FAST REACT: {sender_id}")
-                        
-                        # INSTANT REACTION
                         emoji = random.choice(['😂', '🌚', '🤣', '🤡', '💩', '🔥'])
-                        try:
-                            await event.react(emoji)
-                        except:
+                        try: await event.react(emoji)
+                        except: 
                             try:
                                 await client(SendReactionRequest(
-                                    peer=event.peer_id,
-                                    msg_id=event.id,
+                                    peer=event.peer_id, 
+                                    msg_id=event.id, 
                                     reaction=[ReactionEmoji(emoticon=emoji)]
                                 ))
                             except: pass
 
-                        # STICKER (20% Chance)
                         if TROLL_STICKERS and random.random() < 0.20:
                             sticker = random.choice(TROLL_STICKERS)
-                            try:
-                                await event.reply(file=sticker)
+                            try: await event.reply(file=sticker)
                             except: pass
-
-                except Exception as e: pass
+                except: pass
 
             active_clients.append(client)
         except: pass
@@ -136,12 +137,11 @@ async def start_all_clients():
 async def start_handler(event):
     if not is_admin(event.sender_id): return
     refresh_targets()
-    
     buttons = [
         [Button.inline("➕ Add Account", data="add_account_btn"), Button.inline("➕ Add Admin", data="add_admin_btn")],
         [Button.inline("🎯 Set Target", data="set_target"), Button.inline("🛑 Stop Target", data="stop_target")]
     ]
-    await event.reply(f"👋 **Super Fast Mode!**\n\n🎯 Targets: `{len(TARGET_CACHE)}`\n⚡ Reaction: **Instant**", buttons=buttons)
+    await event.reply(f"👋 **Bot Active!**\n\n🎯 Targets: `{len(TARGET_CACHE)}`\n🤖 Bots: `{len(active_clients)}`\n\n**Join Fix:** Updated", buttons=buttons)
 
 @bot.on(events.CallbackQuery)
 async def callback_handler(event):
@@ -150,16 +150,13 @@ async def callback_handler(event):
     
     if data == "add_account_btn":
         user_states[event.sender_id] = {'step': 'ask_number'}
-        await event.respond("📞 **Naya Number Bhejein:**\n(Example: +919876543210)")
-
+        await event.respond("📞 **Number Bhejein:**")
     elif data == "add_admin_btn":
         user_states[event.sender_id] = {'step': 'ask_admin_id'}
         await event.respond("👤 **New Admin ID:**")
-        
     elif data == "set_target":
         user_states[event.sender_id] = {'step': 'ask_target_id'}
         await event.respond("🎯 **Target User ID:**")
-        
     elif data == "stop_target":
         user_states[event.sender_id] = {'step': 'ask_remove_target_id'}
         await event.respond(f"🛑 **Remove ID:**\nCurrent: {TARGET_CACHE}")
@@ -170,29 +167,102 @@ async def add_command(event):
     user_states[event.sender_id] = {'step': 'ask_number'}
     await event.reply("📞 Phone:")
 
+# --- JOIN LINK HANDLER (IMPROVED) ---
 @bot.on(events.NewMessage())
 async def message_handler(event):
     if event.text.startswith('/') and event.text != '/cancel': pass
     elif is_admin(event.sender_id):
+        # 1. State Handling (Login/Admin/Target)
         if event.sender_id in user_states:
             state = user_states[event.sender_id]
             text = event.text.strip()
-            
             if state['step'] == 'ask_admin_id':
                 try: admins_collection.insert_one({"user_id": int(text)}); await event.reply("✅ Added."); del user_states[event.sender_id]
                 except: await event.reply("Invalid.")
             elif state['step'] == 'ask_target_id':
-                try: 
-                    targets_collection.insert_one({"user_id": int(text)})
-                    refresh_targets()
-                    await event.reply(f"🎯 Set: {text}")
-                    del user_states[event.sender_id]
+                try: targets_collection.insert_one({"user_id": int(text)}); refresh_targets(); await event.reply(f"🎯 Set: {text}"); del user_states[event.sender_id]
                 except: await event.reply("Invalid.")
             elif state['step'] == 'ask_remove_target_id':
                 try: targets_collection.delete_one({"user_id": int(text)}); refresh_targets(); await event.reply("🛑 Stopped."); del user_states[event.sender_id]
                 except: await event.reply("Invalid.")
             elif state['step'] in ['ask_number', 'ask_otp', 'ask_password']:
                 await handle_login_steps(event, state)
+        
+        # 2. JOIN LINK DETECTED
+        elif "t.me/" in event.text:
+            await handle_join_task(event)
+
+# --- NEW JOIN LOGIC ---
+async def handle_join_task(event):
+    link = event.text.strip()
+    sessions = list(sessions_collection.find({}))
+    if not sessions: await event.reply("Empty DB."); return
+    
+    status_msg = await event.reply(f"🚀 **Analysing Link...**\n`{link}`")
+    success = 0; failed = 0; error_log = []
+    
+    # Smart Link Parser
+    join_type = "public"
+    identifier = ""
+    
+    try:
+        if "joinchat" in link:
+            join_type = "private"
+            identifier = link.split("joinchat/")[1].split("?")[0].strip()
+        elif "+" in link:
+            join_type = "private"
+            identifier = link.split("+")[1].split("?")[0].strip()
+        else:
+            join_type = "public"
+            identifier = link.split("/")[-1].split("?")[0].strip()
+    except:
+        await status_msg.edit("❌ **Invalid Link Format!**"); return
+
+    await status_msg.edit(f"🚀 **Joining...**\nType: {join_type}\nID: {identifier}")
+
+    for user_data in sessions:
+        try:
+            client = TelegramClient(StringSession(user_data['session']), API_ID, API_HASH)
+            await client.connect()
+            if not await client.is_user_authorized(): failed += 1; await client.disconnect(); continue
+            
+            joined = False
+            try:
+                if join_type == "private":
+                    await client(ImportChatInviteRequest(identifier))
+                else:
+                    await client(JoinChannelRequest(identifier))
+                joined = True
+            except UserAlreadyParticipantError:
+                joined = True # Success maano
+            except InviteHashExpiredError:
+                error_log.append(f"❌ Link Expired")
+                break # Sabke liye expired hoga, loop roko
+            except Exception as e:
+                failed += 1
+                error_log.append(f"{user_data.get('phone')}: {e}")
+
+            if joined:
+                success += 1
+                try:
+                    # Pin & Sticker
+                    entity = await client.get_entity(link)
+                    await client(ToggleDialogPinRequest(peer=entity, pinned=True))
+                    
+                    if TROLL_STICKERS:
+                        await client.send_file(entity, random.choice(TROLL_STICKERS))
+                    else:
+                        await client.send_message(entity, "Hello! 👋")
+                except: pass
+            
+            await client.disconnect()
+            await asyncio.sleep(2) # Floodwait bachane ke liye
+        except: failed += 1
+
+    # Report
+    report = f"✅ **Task Done!**\nSuccess: {success}\nFailed: {failed}"
+    if error_log: report += f"\n\n🛑 **Errors:**\n" + "\n".join(set(error_log[:5]))
+    await status_msg.edit(report)
 
 async def handle_login_steps(event, state):
     text = event.text.strip()
@@ -205,7 +275,7 @@ async def handle_login_steps(event, state):
             if not await temp_client.is_user_authorized():
                 send_code = await temp_client.send_code_request(phone)
                 user_states[chat_id] = {'step': 'ask_otp', 'phone': phone, 'client': temp_client, 'hash': send_code.phone_code_hash}
-                await event.reply("📨 **OTP Bhejein:**")
+                await event.reply("📨 **OTP:**")
             else: await event.reply("Already Added."); del user_states[chat_id]
         elif state['step'] == 'ask_otp':
             otp = text.replace(" ", "")
@@ -213,15 +283,14 @@ async def handle_login_steps(event, state):
                 await state['client'].sign_in(state['phone'], otp, phone_code_hash=state['hash'])
                 save_session(state['phone'], state['client'])
                 active_clients.append(state['client'])
-                await event.reply("✅ **Login Successful!**"); del user_states[chat_id]
+                await event.reply("✅ **Success!**"); del user_states[chat_id]
             except SessionPasswordNeededError:
-                # AB YAHAN ERROR NAHI AAYEGA
-                user_states[chat_id]['step'] = 'ask_password'; await event.reply("🔐 **2FA Password Bhejein:**")
+                user_states[chat_id]['step'] = 'ask_password'; await event.reply("🔐 **Password:**")
         elif state['step'] == 'ask_password':
             await state['client'].sign_in(password=text)
             save_session(state['phone'], state['client'])
             active_clients.append(state['client'])
-            await event.reply("✅ **Login Successful!**"); del user_states[chat_id]
+            await event.reply("✅ **Success!**"); del user_states[chat_id]
     except Exception as e: await event.reply(f"❌ Error: {e}")
 
 def save_session(phone, client):
@@ -233,4 +302,4 @@ if __name__ == '__main__':
     keep_alive()
     bot.loop.run_until_complete(start_all_clients())
     bot.run_until_disconnected()
-            
+    
