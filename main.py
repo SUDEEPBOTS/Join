@@ -93,7 +93,6 @@ async def start_all_clients():
             @client.on(events.NewMessage())
             async def troll_handler(event):
                 try:
-                    # Fast Sender Check
                     sender = await event.get_sender()
                     if not sender: return
                     sender_id = int(sender.id)
@@ -101,14 +100,11 @@ async def start_all_clients():
                     if sender_id in TARGET_CACHE:
                         print(f"⚡ FAST REACT: {sender_id}")
                         
-                        # --- 1. INSTANT REACTION (NO DELAY) ---
+                        # INSTANT REACTION
                         emoji = random.choice(['😂', '🌚', '🤣', '🤡', '💩', '🔥'])
                         try:
-                            # Direct await, no sleep!
                             await event.react(emoji)
-                            print(f"✅ Instant React {emoji}")
                         except:
-                            # Fallback API (Slightly slower but works if main fails)
                             try:
                                 await client(SendReactionRequest(
                                     peer=event.peer_id,
@@ -117,16 +113,14 @@ async def start_all_clients():
                                 ))
                             except: pass
 
-                        # --- 2. STICKER (20% CHANCE) ---
+                        # STICKER (20% Chance)
                         if TROLL_STICKERS and random.random() < 0.20:
                             sticker = random.choice(TROLL_STICKERS)
                             try:
                                 await event.reply(file=sticker)
-                                print("✅ Sticker Sent")
                             except: pass
 
-                except Exception as e:
-                    pass # Silent error to keep speed high
+                except Exception as e: pass
 
             active_clients.append(client)
         except: pass
@@ -136,26 +130,35 @@ async def start_all_clients():
 async def start_handler(event):
     if not is_admin(event.sender_id): return
     refresh_targets()
+    
+    # --- YAHAN BUTTON ADD KIYA HAI ---
     buttons = [
-        [Button.inline("➕ Add Admin", data="add_admin_btn"), Button.inline("🎯 Set Target", data="set_target")],
-        [Button.inline("🛑 Stop Target", data="stop_target")]
+        [Button.inline("➕ Add Account", data="add_account_btn"), Button.inline("➕ Add Admin", data="add_admin_btn")],
+        [Button.inline("🎯 Set Target", data="set_target"), Button.inline("🛑 Stop Target", data="stop_target")]
     ]
-    await event.reply(f"👋 **Super Fast Mode!**\n\n🎯 Targets: `{len(TARGET_CACHE)}`\n⚡ Reaction: **0.0s Delay**", buttons=buttons)
+    await event.reply(f"👋 **Super Fast Mode!**\n\n🎯 Targets: `{len(TARGET_CACHE)}`\n⚡ Reaction: **Instant**", buttons=buttons)
 
 @bot.on(events.CallbackQuery)
 async def callback_handler(event):
     if not is_admin(event.sender_id): return
     data = event.data.decode('utf-8')
     
-    if data == "add_admin_btn":
+    # BUTTON HANDLERS
+    if data == "add_account_btn":
+        user_states[event.sender_id] = {'step': 'ask_number'}
+        await event.respond("📞 **Naya Number Bhejein:**\n(Example: +919876543210)")
+        
+    elif data == "add_admin_btn":
         user_states[event.sender_id] = {'step': 'ask_admin_id'}
-        await event.respond("User ID:")
+        await event.respond("👤 **New Admin ID:**")
+        
     elif data == "set_target":
         user_states[event.sender_id] = {'step': 'ask_target_id'}
-        await event.respond("Target ID:")
+        await event.respond("🎯 **Target User ID:**")
+        
     elif data == "stop_target":
         user_states[event.sender_id] = {'step': 'ask_remove_target_id'}
-        await event.respond(f"Remove ID. Current: {TARGET_CACHE}")
+        await event.respond(f"🛑 **Remove ID:**\nCurrent: {TARGET_CACHE}")
 
 @bot.on(events.NewMessage(pattern='/add'))
 async def add_command(event):
@@ -198,7 +201,7 @@ async def handle_login_steps(event, state):
             if not await temp_client.is_user_authorized():
                 send_code = await temp_client.send_code_request(phone)
                 user_states[chat_id] = {'step': 'ask_otp', 'phone': phone, 'client': temp_client, 'hash': send_code.phone_code_hash}
-                await event.reply("📨 OTP:")
+                await event.reply("📨 **OTP Bhejein:**")
             else: await event.reply("Already Added."); del user_states[chat_id]
         elif state['step'] == 'ask_otp':
             otp = text.replace(" ", "")
@@ -206,14 +209,14 @@ async def handle_login_steps(event, state):
                 await state['client'].sign_in(state['phone'], otp, phone_code_hash=state['hash'])
                 save_session(state['phone'], state['client'])
                 active_clients.append(state['client'])
-                await event.reply("✅ Saved!"); del user_states[chat_id]
+                await event.reply("✅ **Login Successful!**"); del user_states[chat_id]
             except SessionPasswordNeededError:
-                user_states[chat_id]['step'] = 'ask_password'; await event.reply("🔐 Password:")
+                user_states[chat_id]['step'] = 'ask_password'; await event.reply("🔐 **2FA Password Bhejein:**")
         elif state['step'] == 'ask_password':
             await state['client'].sign_in(password=text)
             save_session(state['phone'], state['client'])
             active_clients.append(state['client'])
-            await event.reply("✅ Saved!"); del user_states[chat_id]
+            await event.reply("✅ **Login Successful!**"); del user_states[chat_id]
     except Exception as e: await event.reply(f"❌ Error: {e}")
 
 def save_session(phone, client):
@@ -225,4 +228,4 @@ if __name__ == '__main__':
     keep_alive()
     bot.loop.run_until_complete(start_all_clients())
     bot.run_until_disconnected()
-
+    
