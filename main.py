@@ -6,14 +6,8 @@ from flask import Flask
 from threading import Thread
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
-from telethon.errors import (
-    SessionPasswordNeededError, 
-    FloodWaitError, 
-    UserAlreadyParticipantError
-)
-from telethon.tl.functions.messages import GetStickerSetRequest, ToggleDialogPinRequest, ImportChatInviteRequest
-from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.tl.types import InputStickerSetShortName
+from telethon.tl.functions.messages import GetStickerSetRequest, SendReactionRequest
+from telethon.tl.types import InputStickerSetShortName, ReactionEmoji
 from pymongo import MongoClient
 
 # --- CONFIGURATION ---
@@ -22,7 +16,6 @@ API_HASH = os.environ.get("API_HASH", "your_hash")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token")
 MONGO_URI = os.environ.get("MONGO_URI", "your_mongo_url")
 OWNER_ID = 8389974605  
-STICKER_ID = os.environ.get("STICKER_ID", None) 
 TROLL_PACK_NAME = "SHIVANSHOP4" 
 TROLL_STICKERS = [] 
 
@@ -34,25 +27,15 @@ admins_collection = db["admins"]
 targets_collection = db["targets"]
 
 # --- LOGGING ---
-logging.basicConfig(format='[%(levelname) 5s/%(asctime)s] %(name)s: %(message)s', level=logging.INFO)
+logging.basicConfig(format='%(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# --- FLASK (WEB SERVER FOR RENDER) ---
+# --- FLASK ---
 app = Flask(__name__)
-
 @app.route('/')
-def home():
-    return "Bot is Running!"
-
-def run_web():
-    # Render se PORT lo, warna 8080 use karo
-    port = int(os.environ.get("PORT", 8080))
-    # '0.0.0.0' zaroori hai Render ke liye
-    app.run(host="0.0.0.0", port=port)
-
-def keep_alive():
-    t = Thread(target=run_web)
-    t.daemon = True # Background thread banaya
-    t.start()
+def home(): return "Bot is Running!"
+def run_web(): app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+def keep_alive(): t = Thread(target=run_web); t.daemon = True; t.start()
 
 # --- GLOBALS ---
 bot = TelegramClient('admin_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
@@ -68,9 +51,16 @@ def is_admin(user_id):
 
 def refresh_targets():
     global TARGET_CACHE
-    TARGET_CACHE = set(t['user_id'] for t in targets_collection.find({}))
+    # SAB KUCH INT MEIN CONVERT KARO
+    temp_set = set()
+    for t in targets_collection.find({}):
+        try:
+            temp_set.add(int(t['user_id']))
+        except:
+            pass
+    TARGET_CACHE = temp_set
+    print(f"🔄 Targets Refreshed: {TARGET_CACHE}")
 
-# --- STICKER LOADER ---
 async def load_sticker_pack(client):
     global TROLL_STICKERS
     if not TROLL_PACK_NAME: return
@@ -82,14 +72,14 @@ async def load_sticker_pack(client):
         TROLL_STICKERS = sticker_set.documents
         print(f"✅ Loaded {len(TROLL_STICKERS)} stickers")
     except Exception as e:
-        print(f"❌ Failed to load sticker pack: {e}")
+        print(f"❌ Sticker Error: {e}")
 
-# --- BACKGROUND MONITORING ---
+# --- MONITORING BOT ---
 async def start_all_clients():
     refresh_targets()
     sessions = list(sessions_collection.find({}))
     if not sessions: return
-    print(f"🔄 Starting {len(sessions)} Monitoring Bots...")
+    print(f"🔄 Starting {len(sessions)} Bots...")
     
     stickers_loaded = False
 
@@ -103,40 +93,76 @@ async def start_all_clients():
                 await load_sticker_pack(client)
                 stickers_loaded = True
 
-            @client.on(events.NewMessage(incoming=True))
+            # --- TROLL HANDLER (NO FILTERS) ---
+            # Hum saare messages sunenge, filter baad mein karenge
+            @client.on(events.NewMessage())
             async def troll_handler(event):
-                if event.sender_id in TARGET_CACHE:
-                    try:
-                        await asyncio.sleep(random.randint(3, 10))
-                        emoji = random.choice(['😂', '🌚', '🤣', '🤡', '💩'])
-                        try: await event.react(emoji)
-                        except: pass 
-                        if TROLL_STICKERS and random.random() > 0.3:
-                            sticker = random.choice(TROLL_STICKERS)
-                            await event.reply(file=sticker)
-                    except: pass
-            active_clients.append(client)
-        except: pass
+                try:
+                    # Sender ID nikalo safe tareeke se
+                    sender = await event.get_sender()
+                    if not sender: return
+                    sender_id = int(sender.id)
 
-# --- COMMANDS ---
+                    # LOGGING: Har message ka ID print karega (Debugging ke liye)
+                    # print(f"👀 Saw msg from: {sender_id} in Chat: {event.chat_id}")
+
+                    # MATCH CHECK
+                    if sender_id in TARGET_CACHE:
+                        print(f"🎯 TARGET DETECTED: {sender_id}")
+                        
+                        # 1. Reaction Logic
+                        await asyncio.sleep(random.randint(1, 4))
+                        emoji = random.choice(['😂', '🌚', '🤣', '🤡', '💩', '🔥'])
+                        
+                        try:
+                            # Method 1: Easy Way
+                            await event.react(emoji)
+                            print(f"✅ Reacted {emoji}")
+                        except:
+                            try:
+                                # Method 2: API Way (Stronger)
+                                await client(SendReactionRequest(
+                                    peer=event.peer_id,
+                                    msg_id=event.id,
+                                    reaction=[ReactionEmoji(emoticon=emoji)]
+                                ))
+                                print(f"✅ Reacted API {emoji}")
+                            except Exception as e:
+                                print(f"❌ Reaction Failed: {e}")
+
+                        # 2. Sticker Reply
+                        if TROLL_STICKERS:
+                            sticker = random.choice(TROLL_STICKERS)
+                            try:
+                                await event.reply(file=sticker)
+                                print("✅ Sticker Sent")
+                            except Exception as e:
+                                print(f"❌ Sticker Failed: {e}")
+
+                except Exception as e:
+                    print(f"Handler Error: {e}")
+
+            active_clients.append(client)
+        except Exception as e:
+            print(f"Client Fail: {e}")
+
+# --- ADMIN COMMANDS ---
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     if not is_admin(event.sender_id): return
     refresh_targets()
     buttons = [
-        [Button.inline("➕ Add Admin", data="add_admin_btn"), Button.inline("🤖 Stats", data="stats")],
-        [Button.inline("🎯 Set Target", data="set_target"), Button.inline("🛑 Stop Target", data="stop_target")]
+        [Button.inline("➕ Add Admin", data="add_admin_btn"), Button.inline("🎯 Set Target", data="set_target")],
+        [Button.inline("🛑 Stop Target", data="stop_target")]
     ]
-    await event.reply(f"👋 **Boss!**\nTargets: `{len(TARGET_CACHE)}`\nLoaded Stickers: `{len(TROLL_STICKERS)}`", buttons=buttons)
+    await event.reply(f"👋 **Working!**\nTargets: `{len(TARGET_CACHE)}`\nStickers: `{len(TROLL_STICKERS)}`", buttons=buttons)
 
 @bot.on(events.CallbackQuery)
 async def callback_handler(event):
     if not is_admin(event.sender_id): return
     data = event.data.decode('utf-8')
-    if data == "stats":
-        total = sessions_collection.count_documents({})
-        await event.answer(f"Accounts: {total}", alert=True)
-    elif data == "add_admin_btn":
+    
+    if data == "add_admin_btn":
         user_states[event.sender_id] = {'step': 'ask_admin_id'}
         await event.respond("User ID:")
     elif data == "set_target":
@@ -159,19 +185,22 @@ async def message_handler(event):
         if event.sender_id in user_states:
             state = user_states[event.sender_id]
             text = event.text.strip()
+            
             if state['step'] == 'ask_admin_id':
                 try: admins_collection.insert_one({"user_id": int(text)}); await event.reply("✅ Added."); del user_states[event.sender_id]
                 except: await event.reply("Invalid.")
             elif state['step'] == 'ask_target_id':
-                try: targets_collection.insert_one({"user_id": int(text)}); refresh_targets(); await event.reply("🎯 Set."); del user_states[event.sender_id]
+                try: 
+                    targets_collection.insert_one({"user_id": int(text)})
+                    refresh_targets()
+                    await event.reply(f"🎯 Set: {text}")
+                    del user_states[event.sender_id]
                 except: await event.reply("Invalid.")
             elif state['step'] == 'ask_remove_target_id':
                 try: targets_collection.delete_one({"user_id": int(text)}); refresh_targets(); await event.reply("🛑 Stopped."); del user_states[event.sender_id]
                 except: await event.reply("Invalid.")
             elif state['step'] in ['ask_number', 'ask_otp', 'ask_password']:
                 await handle_login_steps(event, state)
-        elif "t.me/" in event.text:
-            await handle_join_task(event)
 
 async def handle_login_steps(event, state):
     text = event.text.strip()
@@ -207,52 +236,8 @@ def save_session(phone, client):
     if not sessions_collection.find_one({"phone": phone}):
         sessions_collection.insert_one({"phone": phone, "session": session})
 
-async def handle_join_task(event):
-    link = event.text.strip()
-    sessions = list(sessions_collection.find({}))
-    if not sessions: await event.reply("Empty DB."); return
-    status_msg = await event.reply(f"🚀 Joining...\nTarget: {link}")
-    success = 0; failed = 0; error_log = []
-    
-    for user_data in sessions:
-        try:
-            client = TelegramClient(StringSession(user_data['session']), API_ID, API_HASH)
-            await client.connect()
-            if not await client.is_user_authorized(): failed += 1; await client.disconnect(); continue
-            joined = False
-            try:
-                if "+" in link or "joinchat" in link:
-                    await client(ImportChatInviteRequest(link.split("+")[1]))
-                else:
-                    await client(JoinChannelRequest(link.split("/")[-1]))
-                joined = True
-            except UserAlreadyParticipantError: joined = True
-            except Exception as e: failed += 1; error_log.append(f"{user_data['phone']}: {e}")
-
-            if joined:
-                try:
-                    entity = await client.get_entity(link)
-                    await client(ToggleDialogPinRequest(peer=entity, pinned=True))
-                    if STICKER_ID: await client.send_file(entity, STICKER_ID)
-                    success += 1
-                except: success += 1
-            await client.disconnect()
-            await asyncio.sleep(2)
-        except: failed += 1
-
-    report = f"✅ **Done!**\nSuccess: {success}\nFailed: {failed}"
-    if error_log: report += f"\nErrors:\n" + "\n".join(error_log[:5])
-    await status_msg.edit(report)
-
 if __name__ == '__main__':
-    # 1. Flask Web Server ko start karo background thread mein
     keep_alive()
-    
-    # 2. Background Bots Start karo
-    print("⏳ Starting Background Bots...")
     bot.loop.run_until_complete(start_all_clients())
-    
-    # 3. Main Bot Start karo
-    print("✅ Bot Deployed & Running!")
     bot.run_until_disconnected()
-        
+    
