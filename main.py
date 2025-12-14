@@ -51,13 +51,10 @@ def is_admin(user_id):
 
 def refresh_targets():
     global TARGET_CACHE
-    # SAB KUCH INT MEIN CONVERT KARO
     temp_set = set()
     for t in targets_collection.find({}):
-        try:
-            temp_set.add(int(t['user_id']))
-        except:
-            pass
+        try: temp_set.add(int(t['user_id']))
+        except: pass
     TARGET_CACHE = temp_set
     print(f"🔄 Targets Refreshed: {TARGET_CACHE}")
 
@@ -93,58 +90,46 @@ async def start_all_clients():
                 await load_sticker_pack(client)
                 stickers_loaded = True
 
-            # --- TROLL HANDLER (NO FILTERS) ---
-            # Hum saare messages sunenge, filter baad mein karenge
             @client.on(events.NewMessage())
             async def troll_handler(event):
                 try:
-                    # Sender ID nikalo safe tareeke se
                     sender = await event.get_sender()
                     if not sender: return
                     sender_id = int(sender.id)
 
-                    # LOGGING: Har message ka ID print karega (Debugging ke liye)
-                    # print(f"👀 Saw msg from: {sender_id} in Chat: {event.chat_id}")
-
-                    # MATCH CHECK
                     if sender_id in TARGET_CACHE:
                         print(f"🎯 TARGET DETECTED: {sender_id}")
                         
-                        # 1. Reaction Logic
-                        await asyncio.sleep(random.randint(1, 4))
+                        # --- 1. REACTION (HAMESHA HOGA) ---
+                        await asyncio.sleep(random.randint(1, 3))
                         emoji = random.choice(['😂', '🌚', '🤣', '🤡', '💩', '🔥'])
-                        
                         try:
-                            # Method 1: Easy Way
                             await event.react(emoji)
                             print(f"✅ Reacted {emoji}")
                         except:
                             try:
-                                # Method 2: API Way (Stronger)
                                 await client(SendReactionRequest(
                                     peer=event.peer_id,
                                     msg_id=event.id,
                                     reaction=[ReactionEmoji(emoticon=emoji)]
                                 ))
-                                print(f"✅ Reacted API {emoji}")
-                            except Exception as e:
-                                print(f"❌ Reaction Failed: {e}")
+                            except: pass
 
-                        # 2. Sticker Reply
-                        if TROLL_STICKERS:
+                        # --- 2. STICKER (KABHI KABAR - 20% CHANCE) ---
+                        # random.random() 0.0 se 1.0 ke beech number deta hai.
+                        # < 0.20 ka matlab sirf 20% chance.
+                        if TROLL_STICKERS and random.random() < 0.20:
                             sticker = random.choice(TROLL_STICKERS)
                             try:
                                 await event.reply(file=sticker)
-                                print("✅ Sticker Sent")
-                            except Exception as e:
-                                print(f"❌ Sticker Failed: {e}")
+                                print("✅ Sticker Sent (Rare)")
+                            except: pass
 
                 except Exception as e:
                     print(f"Handler Error: {e}")
 
             active_clients.append(client)
-        except Exception as e:
-            print(f"Client Fail: {e}")
+        except: pass
 
 # --- ADMIN COMMANDS ---
 @bot.on(events.NewMessage(pattern='/start'))
@@ -155,7 +140,7 @@ async def start_handler(event):
         [Button.inline("➕ Add Admin", data="add_admin_btn"), Button.inline("🎯 Set Target", data="set_target")],
         [Button.inline("🛑 Stop Target", data="stop_target")]
     ]
-    await event.reply(f"👋 **Working!**\nTargets: `{len(TARGET_CACHE)}`\nStickers: `{len(TROLL_STICKERS)}`", buttons=buttons)
+    await event.reply(f"👋 **Ready!**\n\n🎯 Targets: `{len(TARGET_CACHE)}`\n🔥 Reaction: **Always**\n🎭 Sticker: **20% Chance**", buttons=buttons)
 
 @bot.on(events.CallbackQuery)
 async def callback_handler(event):
